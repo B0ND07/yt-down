@@ -34,3 +34,6 @@ frontend/.env.production.local
 # OS
 .DS_Store
 Thumbs.db
+
+backend/.env
+backend/*.session

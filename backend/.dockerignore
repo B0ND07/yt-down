@@ -1,0 +1,27 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Downloads directory (will be mounted as volume)
+downloads/
+
+# IDE
+.vscode/
+.idea/
+
+# Local session files
+*.session
+*.session-journal
+
+# Environment files with secrets
+.env.local
+
+# OS files
+.DS_Store
+Thumbs.db

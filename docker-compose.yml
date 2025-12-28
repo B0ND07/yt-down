@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  backend:
+    build: ./backend
+    container_name: yt-down-backend
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./backend/downloads:/app/downloads
+    environment:
+      - DOWNLOADS_DIR=/app/downloads
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - TELEGRAM_BOT_ENABLED=true
+      # Set your Telegram credentials here or use .env file
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHANNEL_ID=${TELEGRAM_CHANNEL_ID:-}
+      - TELEGRAM_API_ID=${TELEGRAM_API_ID:-}
+      - TELEGRAM_API_HASH=${TELEGRAM_API_HASH:-}
+      - TELEGRAM_SESSION_STRING=${TELEGRAM_SESSION_STRING:-}
+      - TELEGRAM_API_BASE_URL=${TELEGRAM_API_BASE_URL:-http://localhost:8000}
+    restart: unless-stopped

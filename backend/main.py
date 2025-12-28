@@ -1,3 +1,6 @@
+import nest_asyncio
+nest_asyncio.apply()
+
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
@@ -10,8 +13,19 @@ import json
 import zipfile
 import shutil
 import threading
+from datetime import datetime, timedelta
+import datetime
+import time
+import asyncio
+from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_BOT_ENABLED
+from app.services.telegram_service import TelegramService
 
 app = FastAPI(title="YouTube Downloader API")
+
+# Initialize Telegram Bot Service
+bot_service = None
+if TELEGRAM_BOT_ENABLED:
+    bot_service = TelegramService(bot_token=TELEGRAM_BOT_TOKEN)
 
 # CORS middleware
 app.add_middleware(
@@ -28,6 +42,37 @@ os.makedirs(DOWNLOADS_DIR, exist_ok=True)
 
 # Progress tracking
 progress_tracker = {}
+
+# File validity in days
+FILE_VALIDITY_DAYS = 3
+
+def cleanup_old_files():
+    """Remove files older than FILE_VALIDITY_DAYS"""
+    try:
+        current_time = time.time()
+        for filename in os.listdir(DOWNLOADS_DIR):
+            filepath = os.path.join(DOWNLOADS_DIR, filename)
+            if os.path.isfile(filepath):
+                file_age_days = (current_time - os.path.getmtime(filepath)) / 86400
+                if file_age_days > FILE_VALIDITY_DAYS:
+                    os.remove(filepath)
+                    print(f"Removed old file: {filename} (age: {file_age_days:.1f} days)")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
+def cleanup_all_files():
+    """Remove all files from downloads directory"""
+    try:
+        for filename in os.listdir(DOWNLOADS_DIR):
+            filepath = os.path.join(DOWNLOADS_DIR, filename)
+            if os.path.isfile(filepath):
+                os.remove(filepath)
+        print("All files cleaned up")
+    except Exception as e:
+        print(f"Error during cleanup: {e}")
+
+# Cleanup old files on startup
+cleanup_old_files()
 
 
 class VideoURL(BaseModel):
@@ -60,6 +105,23 @@ class VideoInfo(BaseModel):
 @app.get("/")
 async def root():
     return {"message": "YouTube Downloader API"}
+
+@app.on_event("startup")
+async def startup_event():
+    """Start Telegram bot on startup"""
+    if bot_service:
+        try:
+            # Run bot in background
+            asyncio.create_task(bot_service.start_bot())
+            print("Telegram Bot startup initiated")
+        except Exception as e:
+            print(f"Failed to start Telegram Bot: {e}")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Stop Telegram bot on shutdown"""
+    if bot_service:
+        await bot_service.stop_bot()
 
 
 @app.post("/api/playlist-info")
@@ -181,6 +243,10 @@ async def get_video_info(video: VideoURL):
 @app.post("/api/download")
 async def download_video(request: DownloadRequest):
     """Download video and return file ID immediately"""
+    
+    # Cleanup: remove all previous files before new download
+    cleanup_all_files()
+    
     # Generate unique filename
     file_id = str(uuid.uuid4())
     
@@ -194,12 +260,17 @@ async def download_video(request: DownloadRequest):
         'eta': 0,
         'filename': '',
         'ext': 'mp4',
-        'filesize': 0
+        'filesize': 0,
+        'cancelled': False
     }
     
     def download_in_background():
         try:
             def progress_hook(d):
+                # Check if cancelled
+                if progress_tracker[file_id].get('cancelled', False):
+                    raise Exception('Download cancelled by user')
+                    
                 if d['status'] == 'downloading':
                     total = d.get('total_bytes', 0) or d.get('total_bytes_estimate', 0) or 1
                     downloaded = d.get('downloaded_bytes', 0)
@@ -248,10 +319,24 @@ async def download_video(request: DownloadRequest):
                     'percentage': 100
                 })
         except Exception as e:
-            progress_tracker[file_id].update({
-                'status': 'error',
-                'error': str(e)
-            })
+            # Cleanup partial download
+            for f in os.listdir(DOWNLOADS_DIR):
+                if f.startswith(file_id):
+                    try:
+                        os.remove(os.path.join(DOWNLOADS_DIR, f))
+                    except:
+                        pass
+            
+            if progress_tracker[file_id].get('cancelled', False):
+                progress_tracker[file_id].update({
+                    'status': 'cancelled',
+                    'error': 'Download cancelled'
+                })
+            else:
+                progress_tracker[file_id].update({
+                    'status': 'error',
+                    'error': str(e)
+                })
     
     # Start download in background thread
     thread = threading.Thread(target=download_in_background)
@@ -272,6 +357,22 @@ async def get_progress(file_id: str):
     if file_id in progress_tracker:
         return progress_tracker[file_id]
     return {'status': 'unknown', 'percentage': 0}
+
+
+@app.post("/api/cancel/{file_id}")
+async def cancel_download(file_id: str):
+    """Cancel a download in progress"""
+    if file_id in progress_tracker:
+        progress_tracker[file_id]['cancelled'] = True
+        return {'success': True, 'message': 'Download cancelled'}
+    return {'success': False, 'message': 'Download not found'}
+
+
+@app.post("/api/cleanup")
+async def manual_cleanup():
+    """Manually cleanup old files"""
+    cleanup_old_files()
+    return {'success': True, 'message': 'Cleanup completed'}
 
 
 @app.get("/api/download-file/{file_id}")

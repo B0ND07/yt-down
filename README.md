@@ -1,22 +1,29 @@
 # YouTube Downloader
 
-A full-stack YouTube video downloader with FastAPI backend and React frontend.
+A full-stack YouTube video downloader with FastAPI backend, React frontend, and Telegram bot support.
 
 ## Features
 
-- 🎥 Download YouTube videos in multiple qualities
+- 🎥 Download YouTube videos in multiple qualities (up to 4K)
+- 📺 Playlist download support
 - 📊 Quality selector with file size information
 - 🔗 Direct download link option
 - 💾 Server download option
 - 🎨 Modern, responsive UI
 - ⚡ Fast and reliable
+- 📲 **Telegram Bot** - Download videos via Telegram
+- 📤 **Large File Support** - Upload files up to 2GB via Pyrogram
+- 🐳 **Docker Support** - Easy deployment with Docker
 
 ## Tech Stack
 
 ### Backend
 - FastAPI
 - yt-dlp
-- Python 3.8+
+- Python 3.11+
+- python-telegram-bot
+- Pyrogram (for large file uploads)
+- FFmpeg (for video merging)
 
 ### Frontend
 - React 18
@@ -25,128 +32,136 @@ A full-stack YouTube video downloader with FastAPI backend and React frontend.
 
 ## Installation
 
-### Prerequisites
-- Python 3.8 or higher
+### Option 1: Docker (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/yt-down.git
+cd yt-down
+
+# Copy and configure environment
+cp .env.example .env
+# Edit .env with your Telegram credentials
+
+# Run with Docker Compose
+docker-compose up -d --build
+```
+
+### Option 2: Manual Setup
+
+#### Prerequisites
+- Python 3.11 or higher
 - Node.js 14 or higher
+- FFmpeg installed
 - npm or yarn
 
-### Backend Setup
+#### Backend Setup
 
-1. Navigate to the backend directory:
 ```bash
 cd backend
-```
 
-2. Create a virtual environment (optional but recommended):
-```bash
+# Create virtual environment
 python -m venv venv
-# On Windows
+# Windows
 venv\Scripts\activate
-# On macOS/Linux
+# macOS/Linux
 source venv/bin/activate
-```
 
-3. Install dependencies:
-```bash
+# Install dependencies
 pip install -r requirements.txt
-```
+pip install python-telegram-bot pyrogram TgCrypto nest_asyncio
 
-4. Run the backend server:
-```bash
+# Run the server
 python main.py
 ```
 
 The backend will start on `http://localhost:8000`
 
-### Frontend Setup
+#### Frontend Setup
 
-1. Navigate to the frontend directory:
 ```bash
 cd frontend
-```
-
-2. Install dependencies:
-```bash
 npm install
-```
-
-3. Start the development server:
-```bash
 npm start
 ```
 
 The frontend will start on `http://localhost:3000`
 
+## Telegram Bot Setup
+
+1. Create a bot with [@BotFather](https://t.me/BotFather)
+2. Get your API credentials from [my.telegram.org](https://my.telegram.org)
+3. Generate a session string using `pyrogram_session_gen.py`
+4. Configure environment variables in `backend/app/config.py` or `.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHANNEL_ID=-1001234567890
+TELEGRAM_API_ID=your_api_id
+TELEGRAM_API_HASH=your_api_hash
+TELEGRAM_SESSION_STRING=your_session_string
+```
+
+### Bot Commands
+- `/start` - Start the bot
+- `/download <url>` - Download a video
+- `/info <url>` - Get video info
+- `/cancel` - Cancel current download
+
 ## Usage
 
-1. Start both backend and frontend servers
-2. Open your browser and go to `http://localhost:3000`
-3. Paste a YouTube URL in the input field
-4. Click "Get Video Info" to fetch available qualities
-5. Select your preferred quality from the grid
-6. Choose download method:
-   - **Direct Download Link**: Opens the video stream URL directly (faster)
-   - **Download via Server**: Downloads to server first, then to your device (more reliable)
+### Web Interface
+1. Open `http://localhost:3000`
+2. Paste a YouTube URL
+3. Select quality and download
+
+### Telegram Bot
+1. Send a YouTube URL to the bot
+2. Select quality from the buttons
+3. Choose "Send File to Channel" or "Get Download Link"
 
 ## API Endpoints
 
-### POST /api/video-info
-Get video information and available formats
-```json
-{
-  "url": "https://youtube.com/watch?v=..."
-}
-```
-
-### POST /api/download
-Download video to server
-```json
-{
-  "url": "https://youtube.com/watch?v=...",
-  "quality": "1080p",
-  "format_id": "137"
-}
-```
-
-### POST /api/direct-link
-Get direct download link
-```json
-{
-  "url": "https://youtube.com/watch?v=...",
-  "quality": "1080p",
-  "format_id": "137"
-}
-```
-
-### GET /api/download-file/{file_id}
-Download file from server
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/video-info` | Get video information |
+| POST | `/api/download` | Download video to server |
+| POST | `/api/direct-link` | Get direct download link |
+| GET | `/api/download-file/{file_id}` | Download file from server |
+| GET | `/api/progress/{file_id}` | Get download progress |
 
 ## Project Structure
 
 ```
 yt-down/
 ├── backend/
-│   ├── main.py           # FastAPI application
-│   ├── requirements.txt  # Python dependencies
-│   └── downloads/        # Downloaded files (auto-created)
+│   ├── app/
+│   │   ├── config.py              # Configuration
+│   │   └── services/
+│   │       ├── telegram_service.py # Telegram bot
+│   │       └── video_info_service.py
+│   ├── main.py                    # FastAPI app
+│   ├── Dockerfile                 # Docker config
+│   └── requirements.txt
 ├── frontend/
-│   ├── public/
-│   │   └── index.html
 │   ├── src/
-│   │   ├── App.js       # Main React component
-│   │   ├── App.css      # Styles
-│   │   ├── index.js     # Entry point
-│   │   └── index.css    # Global styles
-│   └── package.json     # Node dependencies
+│   │   ├── App.js
+│   │   └── App.css
+│   └── package.json
+├── docker-compose.yml
 └── README.md
 ```
 
-## Notes
+## Environment Variables
 
-- Downloaded files are stored in `backend/downloads/` directory
-- The direct download link may expire after some time (YouTube limitation)
-- Server downloads are more reliable but consume server storage
-- Make sure both servers are running for the application to work
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token | - |
+| `TELEGRAM_CHANNEL_ID` | Channel for large files | - |
+| `TELEGRAM_API_ID` | Telegram API ID | - |
+| `TELEGRAM_API_HASH` | Telegram API Hash | - |
+| `TELEGRAM_SESSION_STRING` | Pyrogram session | - |
+| `API_PORT` | Backend port | 8000 |
 
 ## License
 
