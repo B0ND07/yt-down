@@ -1,8 +1,14 @@
 """Application configuration"""
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # Downloads directory
 DOWNLOADS_DIR = os.getenv("DOWNLOADS_DIR", "downloads")
+
+# Cookies file
+COOKIES_FILE = os.getenv("COOKIES_FILE", "cookies.txt")
 
 # File validity in days
 FILE_VALIDITY_DAYS = int(os.getenv("FILE_VALIDITY_DAYS", "3"))

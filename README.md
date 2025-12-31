@@ -107,6 +107,7 @@ TELEGRAM_SESSION_STRING=your_session_string
 - `/download <url>` - Download a video
 - `/info <url>` - Get video info
 - `/cancel` - Cancel current download
+- `/clean` - Clean downloads folder and session data
 
 ## Usage
 

@@ -37,4 +37,4 @@ ENV API_PORT=8000
 ENV TELEGRAM_BOT_ENABLED=true
 
 # Run the application
-CMD ["python", "main.py"]
+CMD ["python", "server.py"]

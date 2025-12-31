@@ -27,8 +27,11 @@ from ..config import (
     TELEGRAM_CHANNEL_ID, 
     TELEGRAM_API_ID,
     TELEGRAM_API_HASH,
-    TELEGRAM_SESSION_STRING
+    TELEGRAM_API_HASH,
+    TELEGRAM_SESSION_STRING,
+    COOKIES_FILE
 )
+
 from ..utils.file_utils import find_files_by_id
 from ..services.video_info_service import VideoInfoService
 
@@ -204,7 +207,8 @@ class TelegramService:
                 "/start - Show this help message\n"
                 "/download <url> - Download a YouTube video\n"
                 "/info <url> - Get video information\n"
-                "/cancel - Cancel current download\n\n"
+                "/cancel - Cancel current download\n"
+                "/clean - Clean downloads folder\n\n"
                 "💡 You can also just send me a YouTube URL directly!\n\n"
                 "📥 After download, choose:\n"
                 "• Send file via Telegram (for files < 50MB)\n"
@@ -234,7 +238,8 @@ class TelegramService:
             "/start - Start the bot\n"
             "/download <url> - Download video\n"
             "/info <url> - Get video info\n"
-            "/cancel - Cancel download\n\n"
+            "/cancel - Cancel download\n"
+            "/clean - Clean downloads folder\n\n"
             "💡 Tip: Large files (>50MB) will automatically use download links"
         )
         await update.message.reply_text(help_text)
@@ -280,6 +285,20 @@ class TelegramService:
             await update.message.reply_text("✅ Download cancelled")
         else:
             await update.message.reply_text("❌ No active download to cancel")
+
+    async def clean_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /clean command"""
+        print(f"🧹 Received /clean command from user {update.effective_user.id}")
+        try:
+            self._cleanup_downloads()
+            self.active_downloads.clear()
+            self.completed_downloads.clear()
+            self.pending_downloads.clear()
+            await update.message.reply_text("🧹 Downloads folder and session data have been cleaned!")
+            print(f"✅ Cleanup completed for user {update.effective_user.id}")
+        except Exception as e:
+            print(f"❌ Error in clean_command: {e}")
+            await update.message.reply_text(f"❌ Error during cleanup: {str(e)}")
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle text messages (YouTube URLs)"""
@@ -700,6 +719,9 @@ class TelegramService:
                 'merge_output_format': 'mp4',
             }
             
+            if os.path.exists(COOKIES_FILE):
+                 ydl_opts['cookiefile'] = COOKIES_FILE
+
             if FFMPEG_LOCATION:
                 ydl_opts['ffmpeg_location'] = FFMPEG_LOCATION
             
@@ -730,11 +752,11 @@ class TelegramService:
                         # Use asyncio.wait_for to add a timeout
                         info = await asyncio.wait_for(
                             loop.run_in_executor(None, ydl.extract_info, url, True),
-                            timeout=300.0  # 5 minute timeout
+                            timeout=1200.0  # 20 minute timeout
                         )
                         print(f"DEBUG: yt-dlp extract_info completed successfully")
                 except asyncio.TimeoutError:
-                    error_msg = "Download timeout: yt-dlp took too long (>5 minutes). The video might be very large or there's a network issue."
+                    error_msg = "Download timeout: yt-dlp took too long (>20 minutes). The video might be very large or there's a network issue."
                     print(f"ERROR: {error_msg}")
                     await message.edit_text(f"❌ {error_msg}")
                     return
@@ -1082,12 +1104,12 @@ class TelegramService:
                 await query.message.edit_text("📤 Starting upload...")
             
             # Add timeout for file upload - longer for large files
-            # Base timeout: 5 minutes, add 1 minute per 100MB
-            base_timeout = 300  # 5 minutes
+            # Base timeout: 20 minutes, add 1 minute per 100MB
+            base_timeout = 1200  # 20 minutes
             additional_timeout = (filesize // (100 * 1024 * 1024)) * 60  # 1 minute per 100MB
             upload_timeout = base_timeout + additional_timeout
-            # Cap at 30 minutes maximum
-            upload_timeout = min(upload_timeout, 1800)
+            # Cap at 60 minutes maximum
+            upload_timeout = min(upload_timeout, 3600)
             
             print(f"DEBUG: Upload timeout set to {upload_timeout} seconds ({upload_timeout/60:.1f} minutes) for file size {self._format_file_size(filesize)}")
             
@@ -1697,6 +1719,7 @@ class TelegramService:
         application.add_handler(CommandHandler("info", self.info_command))
         application.add_handler(CommandHandler("download", self.download_command))
         application.add_handler(CommandHandler("cancel", self.cancel_command))
+        application.add_handler(CommandHandler("clean", self.clean_command))
         print("✅ Command handlers registered")
         
         # Callback query handler
@@ -1714,12 +1737,12 @@ class TelegramService:
         
         try:
             print(f"🤖 Starting Telegram bot with token: {self.bot_token[:10]}...")
-            # Configure timeouts for large file uploads (30 minutes)
+            # Configure timeouts for large file uploads (60 minutes)
             from telegram.request import HTTPXRequest
             request = HTTPXRequest(
                 connection_pool_size=8,
-                read_timeout=1800,  # 30 minutes
-                write_timeout=1800,  # 30 minutes
+                read_timeout=3600,  # 60 minutes
+                write_timeout=3600,  # 60 minutes
                 connect_timeout=60
             )
             self.application = Application.builder().token(self.bot_token).request(request).build()

@@ -2,6 +2,7 @@
 import yt_dlp
 import os
 from typing import Dict, List
+from ..config import COOKIES_FILE
 
 # FFmpeg location
 FFMPEG_LOCATION = r"C:\ffmpeg\ffmpeg.exe"
@@ -19,6 +20,10 @@ class VideoInfoService:
             'no_warnings': True,
             'extract_flat': True,  # Don't download, just get metadata
         }
+        
+        if os.path.exists(COOKIES_FILE):
+             ydl_opts['cookiefile'] = COOKIES_FILE
+
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -68,6 +73,10 @@ class VideoInfoService:
         
         if FFMPEG_LOCATION:
             ydl_opts['ffmpeg_location'] = FFMPEG_LOCATION
+            
+        if os.path.exists(COOKIES_FILE):
+             ydl_opts['cookiefile'] = COOKIES_FILE
+
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -165,6 +174,10 @@ class VideoInfoService:
         
         if FFMPEG_LOCATION:
             ydl_opts['ffmpeg_location'] = FFMPEG_LOCATION
+            
+        if os.path.exists(COOKIES_FILE):
+             ydl_opts['cookiefile'] = COOKIES_FILE
+
         
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
