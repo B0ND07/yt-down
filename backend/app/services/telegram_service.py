@@ -3,6 +3,9 @@ import os
 import uuid
 import asyncio
 import base64
+import time
+import json
+import subprocess
 from typing import Dict, Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -107,27 +110,132 @@ def split_file(file_path, chunk_size=int(1.95 * 1024 * 1024 * 1024)):
     Returns:
         List of chunk file paths
     """
-    MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB in bytes
+    import subprocess
+    
+    MAX_FILE_SIZE = 2000 * 1024 * 1024  # 2000 MiB in bytes (Telegram limit)
     file_size = os.path.getsize(file_path)
     
     if file_size <= MAX_FILE_SIZE:
         # File is small enough, no splitting needed
         return [file_path]
     
+    base_name = os.path.basename(file_path)
+    file_name, file_ext = os.path.splitext(base_name)
+    dir_path = os.path.dirname(file_path)
+    
+    # Check if it's a video file
+    video_extensions = ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.3gp', '.mpg', '.mpeg']
+    is_video = file_ext.lower() in video_extensions
+    
+    if is_video:
+        # For video files, use FFmpeg to create independently playable segments
+        print(f"Splitting video file {base_name} ({format_bytes(file_size)}) into segments...")
+        
+        # Get video duration using ffprobe
+        try:
+            probe_cmd = ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', file_path]
+            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+            if probe_result.returncode == 0:
+                import json
+                probe_data = json.loads(probe_result.stdout)
+                duration = float(probe_data['format']['duration'])
+                print(f"Video duration: {duration} seconds")
+            else:
+                raise Exception("Failed to get video duration")
+        except Exception as e:
+            print(f"Failed to probe video: {e}, falling back to binary splitting")
+            is_video = False
+    
+    if is_video and 'duration' in locals():
+        # For video files, split to maximize first chunk size up to chunk_size limit
+        # Calculate bitrate to estimate duration for each chunk
+        bitrate = file_size / duration if duration > 0 else 0
+        print(f"Video bitrate: {bitrate:.0f} bytes/second")
+        
+        # Calculate number of segments needed
+        num_segments = (file_size + chunk_size - 1) // chunk_size
+        print(f"Splitting video into {num_segments} parts (first part max {format_bytes(chunk_size)})")
+        
+        chunk_files = []
+        current_time = 0.0
+        
+        for i in range(num_segments):
+            chunk_filename = f"{file_name}.part{i+1:03d}{file_ext}"
+            chunk_path = os.path.join(dir_path, chunk_filename)
+            
+            if i == num_segments - 1:
+                # Last segment - take from current_time to end
+                segment_duration = duration - current_time
+                ffmpeg_cmd = [
+                    'ffmpeg', '-i', file_path,
+                    '-ss', str(current_time),
+                    '-c', 'copy',
+                    '-movflags', '+faststart',
+                    '-avoid_negative_ts', 'make_zero',
+                    chunk_path
+                ]
+            else:
+                # Calculate duration for this chunk to reach chunk_size
+                target_size = min(chunk_size, file_size - (i * chunk_size))
+                segment_duration = target_size / bitrate if bitrate > 0 else duration / num_segments
+                # Ensure we don't exceed remaining duration
+                segment_duration = min(segment_duration, duration - current_time)
+                
+                ffmpeg_cmd = [
+                    'ffmpeg', '-i', file_path,
+                    '-ss', str(current_time),
+                    '-t', str(segment_duration),
+                    '-c', 'copy',
+                    '-movflags', '+faststart',
+                    '-avoid_negative_ts', 'make_zero',
+                    chunk_path
+                ]
+            
+            try:
+                result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True, timeout=300)
+                if result.returncode == 0 and os.path.exists(chunk_path):
+                    chunk_size_actual = os.path.getsize(chunk_path)
+                    chunk_files.append(chunk_path)
+                    print(f"Created video segment {i+1}/{num_segments}: {chunk_filename} ({format_bytes(chunk_size_actual)})")
+                    current_time += segment_duration
+                else:
+                    print(f"Failed to create segment {i+1}: FFmpeg error: {result.stderr}")
+                    # Clean up any partial files
+                    if os.path.exists(chunk_path):
+                        os.remove(chunk_path)
+                    break
+            except subprocess.TimeoutExpired:
+                print(f"FFmpeg timeout for segment {i+1}")
+                if os.path.exists(chunk_path):
+                    os.remove(chunk_path)
+                break
+            except Exception as e:
+                print(f"Error creating segment {i+1}: {e}")
+                if os.path.exists(chunk_path):
+                    os.remove(chunk_path)
+                break
+        
+        if len(chunk_files) == num_segments:
+            return chunk_files
+        else:
+            print(f"FFmpeg splitting created only {len(chunk_files)} segments, falling back to binary splitting")
+            # Fall back to binary splitting if FFmpeg fails
+            is_video = False
+    
+    # Fallback to binary splitting for non-video files or if FFmpeg fails
+    if not is_video:
+        print(f"Splitting file {base_name} ({format_bytes(file_size)}) into binary chunks...")
+    
     # Calculate number of parts needed
     num_parts = (file_size + chunk_size - 1) // chunk_size
     
     chunk_files = []
-    base_name = os.path.basename(file_path)
-    file_name, file_ext = os.path.splitext(base_name)
-    
-    print(f"Splitting file {base_name} ({format_bytes(file_size)}) into {num_parts} parts...")
     
     with open(file_path, 'rb') as source_file:
         for part_num in range(num_parts):
             # Create chunk filename
             chunk_filename = f"{file_name}.part{part_num + 1:03d}{file_ext}"
-            chunk_path = os.path.join(os.path.dirname(file_path), chunk_filename)
+            chunk_path = os.path.join(dir_path, chunk_filename)
             
             # Read and write chunk
             bytes_to_read = min(chunk_size, file_size - (part_num * chunk_size))
@@ -238,7 +346,7 @@ class TelegramService:
             "/start - Start the bot\n"
             "/download <url> - Download video\n"
             "/info <url> - Get video info\n"
-            "/cancel - Cancel download\n"
+            "/cancel - Restart bot (cancel all downloads)\n"
             "/clean - Clean downloads folder\n\n"
             "💡 Tip: Large files (>50MB) will automatically use download links"
         )
@@ -275,16 +383,31 @@ class TelegramService:
         await self._handle_video_url(update, url)
     
     async def cancel_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        """Handle /cancel command"""
+        """Handle /cancel command - restart bot"""
         user_id = str(update.effective_user.id)
+        print(f"🔄 Received /cancel command from user {user_id} - restarting bot")
         
-        if user_id in self.active_downloads:
-            download_info = self.active_downloads[user_id]
-            # Mark as cancelled (actual cancellation would need download service integration)
-            del self.active_downloads[user_id]
-            await update.message.reply_text("✅ Download cancelled")
-        else:
-            await update.message.reply_text("❌ No active download to cancel")
+        # Cancel all active downloads
+        cancelled_count = 0
+        for uid, download_info in self.active_downloads.items():
+            download_info['cancelled'] = True
+            cancelled_count += 1
+        
+        # Clean up downloads and session data
+        self._cleanup_downloads()
+        self.active_downloads.clear()
+        self.completed_downloads.clear()
+        self.pending_downloads.clear()
+        
+        await update.message.reply_text(
+            f"🔄 **Bot Restarted**\n\n"
+            f"✅ Cancelled {cancelled_count} active downloads\n"
+            f"🧹 Cleaned downloads folder\n"
+            f"🔄 Reset session data\n\n"
+            f"Bot is ready for new downloads!"
+        )
+        
+        print(f"✅ Bot restart completed for user {user_id}")
 
     async def clean_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /clean command"""
@@ -668,19 +791,29 @@ class TelegramService:
             
             progress_queue = asyncio.Queue()
             last_update_percentage = [0]
+            last_update_time = [time.time()]
             
             def progress_hook(d):
                 if d['status'] == 'downloading':
+                    # Check if cancelled
+                    if self.active_downloads.get(user_id, {}).get('cancelled', False):
+                        raise Exception("Download cancelled by user")
+                    
                     total = d.get('total_bytes', 0) or d.get('total_bytes_estimate', 0) or 1
                     downloaded = d.get('downloaded_bytes', 0)
                     percentage = (downloaded * 100) / total if total > 0 else 0
                     current_percentage = int(percentage)
                     
-                    # Queue progress updates (throttle to every 10%)
-                    if current_percentage >= last_update_percentage[0] + 10:
-                        last_update_percentage[0] = current_percentage
+                    # Get fragment info
+                    frag_index = d.get('fragment_index')
+                    frag_count = d.get('fragment_count')
+                    
+                    # Queue progress updates every 5 seconds or at completion
+                    current_time = time.time()
+                    if current_time - last_update_time[0] >= 5 or current_percentage >= 100:
+                        last_update_time[0] = current_time
                         try:
-                            progress_queue.put_nowait((current_percentage, downloaded, total))
+                            progress_queue.put_nowait((current_percentage, downloaded, total, frag_index, frag_count))
                         except Exception:
                             pass
             
@@ -688,10 +821,10 @@ class TelegramService:
             async def monitor_progress():
                 while True:
                     try:
-                        percentage, downloaded, total = await asyncio.wait_for(
+                        percentage, downloaded, total, frag_index, frag_count = await asyncio.wait_for(
                             progress_queue.get(), timeout=1.0
                         )
-                        await self._update_progress(message, percentage, downloaded, total)
+                        await self._update_progress(message, percentage, downloaded, total, frag_index, frag_count)
                     except asyncio.TimeoutError:
                         continue
                     except Exception:
@@ -706,8 +839,10 @@ class TelegramService:
                 # Try to merge with best audio. If that fails (e.g. format is already merged), use format_id as is.
                 # We do NOT fallback to 'best' because that causes the "low quality" issue the user reported.
                 format_string = f"{format_id}+bestaudio/{format_id}"
+                merge_output_format = 'mp4'
             else:
                 format_string = 'bestvideo+bestaudio/best'
+                merge_output_format = 'mp4'
             
             ydl_opts = {
                 'format': format_string,
@@ -716,7 +851,7 @@ class TelegramService:
                 'no_warnings': False,  # Show warnings to debug issues
                 'progress_hooks': [progress_hook],
                 'progress_hooks': [progress_hook],
-                'merge_output_format': 'mp4',
+                'merge_output_format': merge_output_format,
             }
             
             if os.path.exists(COOKIES_FILE):
@@ -761,6 +896,11 @@ class TelegramService:
                     await message.edit_text(f"❌ {error_msg}")
                     return
                 except Exception as e:
+                    if "Download cancelled by user" in str(e):
+                        await message.edit_text("❌ Download cancelled by user")
+                        if user_id in self.active_downloads:
+                            del self.active_downloads[user_id]
+                        return
                     error_msg = f"yt-dlp error: {str(e)}"
                     print(f"ERROR: {error_msg}")
                     import traceback
@@ -1045,10 +1185,214 @@ class TelegramService:
             await query.message.reply_text("❌ File not found on server")
             return
         
-        # Check file size - channels support up to 2GB with Userbot/MTProto
+        # Check file size - split if necessary
         TELEGRAM_BOT_LIMIT = 50 * 1024 * 1024  # 50MB for bots via HTTP
-        TELEGRAM_MTPROTO_LIMIT = 2000 * 1024 * 1024  # 2GB for MTProto
+        TELEGRAM_MTPROTO_LIMIT = 1900 * 1024 * 1024  # 1900MB (1.9GB) for MTProto to stay under 2GB limit
         
+        # Split file if larger than 2GB
+        if filesize > TELEGRAM_MTPROTO_LIMIT:
+            await query.message.edit_text("🔄 Splitting large file, please wait...")
+        chunk_files = split_file(filepath, chunk_size=TELEGRAM_MTPROTO_LIMIT)
+        
+        if len(chunk_files) > 1:
+            # Multiple parts - upload each part
+            await query.message.edit_text(
+                f"📦 File is large ({self._format_file_size(filesize)}), splitting into {len(chunk_files)} parts..."
+            )
+            uploaded_parts = []
+            for i, chunk_path in enumerate(chunk_files, 1):
+                part_filename = os.path.basename(chunk_path)
+                part_filesize = os.path.getsize(chunk_path)
+                print(f"Uploading part {i}/{len(chunk_files)}: {part_filename}")
+                
+                # Update message for current part
+                await query.message.edit_text(
+                    f"📤 Uploading Part {i}/{len(chunk_files)}\n"
+                    f"📄 {part_filename}\n"
+                    f"📏 {self._format_file_size(part_filesize)}"
+                )
+                
+                try:
+                    # Decide transfer method for each part
+                    use_pyrogram_part = part_filesize > TELEGRAM_BOT_LIMIT and self.pyrogram_client and self.pyrogram_client.is_connected
+                    
+                    if use_pyrogram_part:
+                        target_chat = self.channel_id if self.channel_id else query.message.chat.id
+                        
+                        # Handle private channel IDs which often need -100 prefix if not present
+                        if isinstance(target_chat, str) and target_chat.replace('-','').isdigit():
+                            target_chat = int(target_chat)
+                        
+                        # Resolve peer first - this caches the channel in Pyrogram's session
+                        try:
+                            print(f"DEBUG: Resolving peer/channel {target_chat} for part {i}...")
+                            
+                            # Method 1: Try to get the chat directly
+                            try:
+                                chat = await self.pyrogram_client.get_chat(target_chat)
+                                print(f"DEBUG: Channel resolved via get_chat: {chat.title} (ID: {chat.id})")
+                            except Exception as e1:
+                                print(f"DEBUG: get_chat failed: {e1}")
+                                
+                                # Method 2: Try to manually create InputPeerChannel
+                                try:
+                                    from pyrogram.raw.types import InputPeerChannel, PeerChannel
+                                    from pyrogram.raw.functions.channels import GetChannels
+                                    
+                                    print(f"DEBUG: Trying manual InputPeerChannel...")
+                                    
+                                    # Extract channel ID (remove -100 prefix)
+                                    if str(target_chat).startswith("-100"):
+                                        channel_id = int(str(target_chat)[4:])
+                                        
+                                        print(f"DEBUG: Channel ID: {channel_id}, trying to fetch...")
+                                        
+                                        # Try to get channel info using raw API with access_hash=0
+                                        input_channel = InputPeerChannel(
+                                            channel_id=channel_id,
+                                            access_hash=0
+                                        )
+                                        
+                                        # Get channel info
+                                        result = await self.pyrogram_client.invoke(
+                                            GetChannels(id=[input_channel])
+                                        )
+                                        
+                                        if result.chats:
+                                            chat = result.chats[0]
+                                            print(f"DEBUG: Channel resolved via raw API: {chat.title} (ID: {chat.id})")
+                                        else:
+                                            raise Exception("Channel not found")
+                                            
+                                    else:
+                                        raise Exception("Not a channel ID")
+                                        
+                                except Exception as e2:
+                                    print(f"DEBUG: Manual InputPeerChannel failed: {e2}")
+                                    
+                                    # Method 3: Try to send a dummy message to resolve peer
+                                    try:
+                                        print(f"DEBUG: Trying to resolve by sending dummy message...")
+                                        # This will fail but might resolve the peer
+                                        await self.pyrogram_client.send_message(target_chat, "Resolving peer...")
+                                        # If it doesn't fail, delete the message
+                                        await self.pyrogram_client.delete_messages(target_chat, [sent_msg.id])
+                                    except Exception as e3:
+                                        print(f"DEBUG: Dummy message failed: {e3}")
+                                        # Continue anyway, might work now
+                            
+                        except Exception as peer_error:
+                            print(f"WARNING: Peer resolution failed for {target_chat}: {peer_error}")
+                            # Continue anyway, upload might still work
+                        
+                        part_caption = f"{filename} (Part {i}/{len(chunk_files)})"
+                        
+                        # Progress callback for Pyrogram - simplified to avoid event loop issues
+                        progress_parts = {'current': 0, 'total': part_filesize, 'updated': False}
+                        
+                        def pyro_progress_part(current, total):
+                            progress_parts['current'] = current
+                            progress_parts['total'] = total
+                            progress_parts['updated'] = True
+                        
+                        # Background task to update progress
+                        async def update_progress():
+                            while not progress_parts.get('done', False):
+                                if progress_parts['updated']:
+                                    percent = int((progress_parts['current'] / progress_parts['total']) * 100) if progress_parts['total'] > 0 else 0
+                                    try:
+                                        await query.message.edit_text(
+                                            f"📤 Uploading Part {i}/{len(chunk_files)}\n"
+                                            f"📄 {part_filename}\n"
+                                            f"📏 {self._format_file_size(progress_parts['current'])} / {self._format_file_size(progress_parts['total'])} ({percent}%)"
+                                        )
+                                    except Exception as e:
+                                        if "message is not modified" not in str(e).lower():
+                                            print(f"Progress update error: {e}")
+                                    progress_parts['updated'] = False
+                                await asyncio.sleep(5)
+                        
+                        # Start progress update task
+                        progress_task = asyncio.create_task(update_progress())
+                        
+                        with open(chunk_path, 'rb') as f:
+                            uploaded_msg = await self.pyrogram_client.send_document(
+                                chat_id=target_chat,
+                                document=f,
+                                caption=part_caption,
+                                progress=pyro_progress_part,
+                                force_document=True
+                            )
+                        
+                        # Stop progress task
+                        progress_parts['done'] = True
+                        try:
+                            await progress_task
+                        except:
+                            pass
+                    else:
+                        # Progress callback for bot API - simplified
+                        progress_parts_bot = {'current': 0, 'total': part_filesize, 'updated': False}
+                        
+                        def bot_progress_part(current, total):
+                            progress_parts_bot['current'] = current
+                            progress_parts_bot['total'] = total
+                            progress_parts_bot['updated'] = True
+                        
+                        # Background task to update progress
+                        async def update_progress_bot():
+                            while not progress_parts_bot.get('done', False):
+                                if progress_parts_bot['updated']:
+                                    percent = int((progress_parts_bot['current'] / progress_parts_bot['total']) * 100) if progress_parts_bot['total'] > 0 else 0
+                                    try:
+                                        await query.message.edit_text(
+                                            f"📤 Uploading Part {i}/{len(chunk_files)}\n"
+                                            f"📄 {part_filename}\n"
+                                            f"📏 {self._format_file_size(progress_parts_bot['current'])} / {self._format_file_size(progress_parts_bot['total'])} ({percent}%)"
+                                        )
+                                    except Exception as e:
+                                        if "message is not modified" not in str(e).lower():
+                                            print(f"Progress update error: {e}")
+                                    progress_parts_bot['updated'] = False
+                                await asyncio.sleep(5)
+                        
+                        # Start progress update task
+                        progress_task_bot = asyncio.create_task(update_progress_bot())
+                        
+                        with open(chunk_path, 'rb') as f:
+                            uploaded_msg = await bot.send_document(
+                                chat_id=query.message.chat.id,
+                                document=f,
+                                caption=f"{filename} (Part {i}/{len(chunk_files)})",
+                                progress=bot_progress_part
+                            )
+                        
+                        # Stop progress task
+                        progress_parts_bot['done'] = True
+                        try:
+                            await progress_task_bot
+                        except:
+                            pass
+                    
+                    uploaded_parts.append(uploaded_msg)
+                    
+                    # Clean up chunk file
+                    os.remove(chunk_path)
+                    
+                except Exception as e:
+                    print(f"Error uploading part {i}: {e}")
+                    await query.message.edit_text(f"❌ Error uploading part {i}: {e}")
+                    return
+            
+            # All parts uploaded
+            await query.message.edit_text(
+                f"✅ File split and uploaded successfully!\n"
+                f"📄 {filename}\n"
+                f"📦 {len(chunk_files)} parts uploaded"
+            )
+            return
+        
+        # Single file - proceed with normal upload
         print(f"DEBUG: _send_file_to_user called with file_id={file_id}")
         print(f"DEBUG: File size: {self._format_file_size(filesize)}")
         print(f"DEBUG: Pyrogram client connected: {self.pyrogram_client.is_connected if self.pyrogram_client else 'No client'}")
@@ -1080,19 +1424,6 @@ class TelegramService:
                     ]])
                 )
                 return
-
-        if filesize > TELEGRAM_MTPROTO_LIMIT:
-            await query.message.edit_text(
-                f"❌ File is too large even for Premium ({self._format_file_size(filesize)} > 2GB limit).\n"
-                "Please use the download link option instead.",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(
-                        "🔗 Get Download Link",
-                        callback_data=f"send_link:{file_id}"
-                    )
-                ]])
-            )
-            return
         
         # Always use channel if configured, regardless of file size
         use_channel = self.channel_id is not None
@@ -1674,12 +2005,14 @@ class TelegramService:
                 ]])
             )
     
-    async def _update_progress(self, message, percentage: int, downloaded: int, total: int) -> None:
+    async def _update_progress(self, message, percentage: int, downloaded: int, total: int, frag_index: int = None, frag_count: int = None) -> None:
         """Update download progress message"""
         try:
             downloaded_str = self._format_file_size(downloaded)
             total_str = self._format_file_size(total)
             progress_text = f"📥 Downloading... {percentage}%\n{downloaded_str} / {total_str}"
+            if frag_count and frag_index is not None:
+                progress_text += f" (frag {frag_index}/{frag_count})"
             await message.edit_text(progress_text)
         except Exception:
             pass  # Ignore errors when updating progress (message might be deleted or edited)
